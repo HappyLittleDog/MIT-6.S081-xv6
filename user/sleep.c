@@ -4,6 +4,11 @@
 
 int main(int argc,char* argv[])
 {
+    if (argc<=1)
+    {
+        fprintf(2, "Usage: sleep <time>\n");
+        exit(1);
+    }
     sleep(atoi(argv[1]));
     exit(0);
 }
