@@ -83,6 +83,8 @@ argstr(int n, char *buf, int max)
   return fetchstr(addr, buf, max);
 }
 
+extern uint64 sys_trace(void);
+extern uint64 sys_sysinfo(void);
 extern uint64 sys_chdir(void);
 extern uint64 sys_close(void);
 extern uint64 sys_dup(void);
@@ -127,6 +129,35 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_trace]   sys_trace,
+[SYS_sysinfo] sys_sysinfo
+};
+
+char* syscall_names[]=
+{
+  "fork",
+  "exit",
+  "wait",
+  "pipe",
+  "read",
+  "kill",
+  "exec",
+  "fstat",
+  "chdir",
+  "dup",
+  "getpid",
+  "sbrk",
+  "sleep",
+  "uptime",
+  "open",
+  "write",
+  "mknod",
+  "unlink",
+  "link",
+  "mkdir",
+  "close",
+  "trace",
+  "sysinfo"
 };
 
 void
@@ -143,4 +174,6 @@ syscall(void)
             p->pid, p->name, num);
     p->trapframe->a0 = -1;
   }
+  if ((((p->tracemask)>>num)&1)==1)
+    printf("%d: syscall %s -> %d\n",p->pid,syscall_names[num-1],p->trapframe->a0);
 }
