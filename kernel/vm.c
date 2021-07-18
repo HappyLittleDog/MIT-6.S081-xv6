@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -45,6 +47,90 @@ kvminit()
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+}
+
+// // Initialize kernel page table for process
+pagetable_t proc_kvminit()
+{
+	pagetable_t kpt = (pagetable_t) kalloc();
+	if (kpt==0)
+		return 0;
+	memset(kpt, 0, PGSIZE);
+
+	// uart registers
+	proc_kvmmap(kpt, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+	// virtio mmio disk interface
+	proc_kvmmap(kpt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+	// CLINT
+	// proc_kvmmap(kpt, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+	// PLIC
+	proc_kvmmap(kpt, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+	//  read the part3 problem, and notice that the user will not use virtual address over 
+	// PLIC(0xC000000) ---- I think this condition is just for simplification. 
+	// After you understand this, you should find that the user will only modify 
+	// the address lies in the first entry of the pagetable. 
+	// That is why I just copy the 1 to 511 entry of kernel_pagetable into per process's pagetable.
+	for (int i=1;i<512;i++)
+		kpt[i]=kernel_pagetable[i];
+	return kpt;
+}
+int proc_mappage(pagetable_t pagetable, uint64 va, uint64 pa, int perm)
+{
+  uint64 a;
+  pte_t *pte;
+
+  a = PGROUNDDOWN(va);
+  if((pte = walk(pagetable, a, 1)) == 0)
+    return -1;
+  *pte = PA2PTE(pa) | perm | PTE_V;
+  return 0;
+}
+int proc_demappage(pagetable_t pagetable, uint64 va)
+{
+  uint64 a;
+  pte_t *pte;
+
+  a = PGROUNDDOWN(va);
+  if((pte = walk(pagetable, a, 1)) == 0)
+    return -1;
+  *pte = ((*pte) & (~PTE_V));
+  return 0;
+}
+void proc_cppt(struct proc* p)
+{
+  // printf("@proc_cppt sz=%p\n",(uint64*)(p->sz));
+  for (uint64 va=0;va<p->sz;va+=PGSIZE)
+  {
+    uint64 pte=walkpte(p->pagetable,va);
+    uint64 pa=PTE2PA(pte);
+
+    // make sure kernel not panic in copyinstr_new 
+    // if user process abuse address in guard page.
+    if (pa<0x80000000)
+      pa=0x80000000;
+    // uint64 perm=((pte&0x3ff)&(~PTE_U));
+    proc_mappage(p->kerpt,va,pa,PTE_X|PTE_R|PTE_W);
+  }
+}
+// Remove kernel page table for process
+void proc_kvmdel(pagetable_t kpt)
+{
+	uint64* nxt=(uint64*)(PTE2PA(kpt[0]));
+  // kfree((uint64*)(PTE2PA(nxt[16])));
+	for (int j=0;j<512;j++)
+	{
+		if (nxt[j]&PTE_V)
+		{
+			uint64* lst=(uint64*)(PTE2PA(nxt[j]));
+			kfree(lst);
+		}
+	}
+	kfree(nxt);
+	kfree(kpt);
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -111,6 +197,24 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+uint64
+walkpte(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+
+  if(va >= MAXVA)
+    return 0;
+
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0)
+    return 0;
+  return *pte;
+}
+
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -119,6 +223,13 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 {
   if(mappages(kernel_pagetable, va, sz, pa, perm) != 0)
     panic("kvmmap");
+}
+
+// add a mapping to the process's kernel page table.
+// does not flush TLB or enable paging.
+void proc_kvmmap(pagetable_t pt, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+	mappages(pt, va, sz, pa, perm);
 }
 
 // translate a kernel virtual address to
@@ -379,6 +490,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  return copyin_new(pagetable,dst,srcva,len);
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -405,6 +517,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  return copyinstr_new(pagetable,dst,srcva,max);
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -439,4 +552,37 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void printkerpt()
+{
+	vmprint(kernel_pagetable);
+}
+
+void vmprint(pagetable_t pagetable)
+{
+	printf("page table %p\n",pagetable);
+	for (int i=0;i<512;i++)
+	{
+		if (pagetable[i]&PTE_V)
+		{
+			printf("..%d: pte %p pa %p\n",i,pagetable[i],((pagetable[i]>>10)<<12));
+			pagetable_t nxt=(pagetable_t)((pagetable[i]>>10)<<12);
+			for (int j=0;j<512;j++)
+			{
+				if (nxt[j]&PTE_V)
+				{
+					printf(".. ..%d: pte %p pa %p\n",j,nxt[j],((nxt[j]>>10)<<12));
+					pagetable_t lst=(pagetable_t)((nxt[j]>>10)<<12);
+					for (int k=0;k<512;k++)
+					{
+						if (lst[k]&PTE_V)
+						{
+							printf(".. .. ..%d: pte %p pa %p\n",k,lst[k],((lst[k]>>10)<<12));
+						}
+					}
+				}
+			}
+		}
+	}
 }

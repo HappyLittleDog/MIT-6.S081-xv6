@@ -121,6 +121,22 @@ found:
     return 0;
   }
 
+  // A kernel page table
+  p->kerpt = proc_kvminit();
+
+  // printf("@Init Proc\n");
+  // printf("Kernel page table:\n");
+  // printkerpt();
+  // printf("Process's kerpt:\n");
+  // vmprint(p->kerpt);
+
+  // if (p->kerpt == 0)
+  // {
+  //   freeproc(p);
+  //   release(&p->lock);
+  //   return 0;
+  // }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +157,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->kerpt)
+    proc_kvmdel(p->kerpt);
+  p->kerpt=0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -228,6 +247,7 @@ userinit(void)
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
+  proc_cppt(p);
   p->state = RUNNABLE;
 
   release(&p->lock);
@@ -240,14 +260,28 @@ growproc(int n)
 {
   uint sz;
   struct proc *p = myproc();
-
+  // printf("@growproc sz=%p n=%p\n",(uint64*)p->sz,(uint64*)((long)(n)));
   sz = p->sz;
-  if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+  if(n > 0)
+  {
+    if (sz+n>=0xc000000)
       return -1;
+    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0)
+      return -1;
+    int ori=PGROUNDUP(p->sz),cur=PGROUNDUP(p->sz+n);
+    for (;ori<cur;ori+=PGSIZE)
+    {
+      uint64 pa=walkaddr(p->pagetable,ori);
+      proc_mappage(p->kerpt,ori,pa,PTE_R|PTE_W|PTE_X);
+      // printf("Add map: %p->%p\n",(uint64*)(long)ori,(uint64*)pa);
     }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    int ori=PGROUNDDOWN(p->sz),cur=PGROUNDDOWN(p->sz-n);
+    for (;ori>cur;ori-=PGSIZE)
+    {
+      proc_demappage(p->kerpt,ori);
+    }
   }
   p->sz = sz;
   return 0;
@@ -292,6 +326,9 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
+
+  // map the child process's kernel page
+  proc_cppt(np);
 
   np->state = RUNNABLE;
 
@@ -473,12 +510,20 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        // printf("Kernel pt:\n");
+        // printkerpt();
+        // printf("Process's kpt:\n");
+        // vmprint(p->kerpt);
+        // printf("Process's page table:\n");
+        // vmprint(p->pagetable);
+        w_satp(MAKE_SATP(p->kerpt));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
+        kvminithart();
         found = 1;
       }
       release(&p->lock);
