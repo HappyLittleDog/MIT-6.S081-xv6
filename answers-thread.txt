@@ -1,0 +1,34 @@
+1.  For there exists potential race, which can cause the lose of keys.
+    Recall the insert() function:
+
+        |   static void insert(int key, int value, struct entry **p, struct entry *n)
+        |   {
+        |   struct entry *e = malloc(sizeof(struct entry));
+        |   e->key = key;
+        |   e->value = value;
+        |   e->next = n;
+        |   *p = e;
+        |   }
+
+    Possible sequence of execution (Suppose the two threads happens to 
+    insert different value into the same bucket):
+
+        |---------------------------|---------------------------|
+        |          Core #1          |          Core #2          |
+        |---------------------------|---------------------------|
+        |            ...            |            ...            |
+        |---------------------------|---------------------------|
+        |       e_1->next = n       |    e_2->value = value;    |
+        |---------------------------|---------------------------|
+        |         *p = e_1;         |       e_2->next = n       |
+        |---------------------------|---------------------------|
+        |          return;          |         *p = e_2;         |
+        |---------------------------|---------------------------|
+        |            ...            |            ...            |
+        |---------------------------|---------------------------|
+    
+    Then e_1 will be lost.
+
+
+2.  To solve the problem, we can use a lock to protect each bucket of the table 
+    when inserting into it.
