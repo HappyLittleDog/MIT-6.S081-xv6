@@ -110,8 +110,11 @@ void proc_cppt(struct proc* p)
 
     // make sure kernel not panic in copyinstr_new 
     // if user process abuse address in guard page.
-    if (pa<0x80000000)
-      pa=0x80000000;
+    // if (pa<0x80000000)
+    // {
+    //   printf("pa=%p\n",pa);
+    //   pa=0x80000000;
+    // }
     // uint64 perm=((pte&0x3ff)&(~PTE_U));
     proc_mappage(p->kerpt,va,pa,PTE_X|PTE_R|PTE_W);
   }
@@ -210,8 +213,8 @@ walkpte(pagetable_t pagetable, uint64 va)
     return 0;
   if((*pte & PTE_V) == 0)
     return 0;
-  if((*pte & PTE_U) == 0)
-    return 0;
+  // if((*pte & PTE_U) == 0)
+  //   return 0;
   return *pte;
 }
 
